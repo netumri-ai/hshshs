@@ -82,6 +82,9 @@ def count_mentions(text: str) -> int:
 def is_forward_hidden(message: Message) -> bool:
     return message.forward_sender_name is not None and message.forward_from is None
 
+def is_forward_open(message: Message) -> bool:
+    return message.forward_from is not None
+
 def is_self_review(message: Message, text: str) -> bool:
     user, _ = parse_review(text)
     if not user:
@@ -120,9 +123,10 @@ async def handle_photo_review(message: Message):
     if is_ad(text):
         return
 
-    if is_self_review(message, text):
-        await message.reply(f"{SELF} Нельзя оставлять отзывы самому себе. Не засчитано")
-        return
+    if not is_forward_open(message):
+        if is_self_review(message, text):
+            await message.reply(f"{SELF} Нельзя оставлять отзывы самому себе. Не засчитано")
+            return
 
     if is_too_many_mentions(text):
         return
@@ -143,9 +147,10 @@ async def handle_text_review(message: Message):
     if is_ad(text):
         return
 
-    if is_self_review(message, text):
-        await message.reply(f"{SELF} Нельзя оставлять отзывы самому себе. Не засчитано")
-        return
+    if not is_forward_open(message):
+        if is_self_review(message, text):
+            await message.reply(f"{SELF} Нельзя оставлять отзывы самому себе. Не засчитано")
+            return
 
     if is_too_many_mentions(text):
         return
@@ -172,6 +177,7 @@ async def process_full_review(message: Message, text: str):
 @dp.message(F.text == "/del")
 async def delete_review(message: Message):
     if message.from_user.id not in ADMIN_IDS:
+        await message.reply(f"{ERR} Нет доступа. Твой ID: {message.from_user.id}")
         return
 
     if not message.reply_to_message:
