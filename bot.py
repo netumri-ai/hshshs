@@ -53,21 +53,31 @@ CLOCK = "<tg-emoji emoji-id='5870496192210669260'>⏲</tg-emoji>"
 SELF = "<tg-emoji emoji-id='5870450390679425417'>🗒</tg-emoji>"
 
 USER_RE = re.compile(r"@(\w+)")
+REP_RE = re.compile(r"(?<!\w)([+-])\s*(rep|реп)\b", re.IGNORECASE)
 AD_RE = re.compile(r"(t\.me|telegram\.me|http|www\.|@\w+bot|купить|продам|заработ|слив|прайс)", re.IGNORECASE)
+URL_RE = re.compile(r"https?://", re.IGNORECASE)
+
+FORBIDDEN_USERS = {"all", "everyone", "admin", "admins", "group", "channel", "bot"}
 
 def parse_review(text: str) -> tuple[str | None, int]:
     user_match = USER_RE.search(text)
     if not user_match:
         return None, 0
 
-    t = text.lower()
-    t = re.sub(r'([+-])\s+', r'\1', t)
-    if "+rep" in t or "+реп" in t:
-        return user_match.group(1).lower(), 1
-    if "-rep" in t or "-реп" in t:
-        return user_match.group(1).lower(), -1
+    username = user_match.group(1).lower()
 
-    return None, 0
+    if username in FORBIDDEN_USERS:
+        return None, 0
+
+    rep_match = REP_RE.search(text)
+    if not rep_match:
+        return None, 0
+
+    sign = rep_match.group(1)
+    return username, 1 if sign == "+" else -1
+
+def count_mentions(text: str) -> int:
+    return len(USER_RE.findall(text))
 
 def is_forward_hidden(message: Message) -> bool:
     return message.forward_sender_name is not None and message.forward_from is None
@@ -81,11 +91,14 @@ def is_self_review(message: Message, text: str) -> bool:
     return False
 
 def is_ad(text: str) -> bool:
-    return bool(AD_RE.search(text))
+    return bool(AD_RE.search(text)) or bool(URL_RE.search(text))
 
 def is_full_review(text: str) -> bool:
     user, rep = parse_review(text)
     return user is not None and rep != 0
+
+def is_too_many_mentions(text: str) -> bool:
+    return count_mentions(text) > 3
 
 async def update_rep(username: str, value: int):
     async with pool.acquire() as conn:
@@ -111,6 +124,9 @@ async def handle_photo_review(message: Message):
         await message.reply(f"{SELF} Нельзя оставлять отзывы самому себе. Не засчитано")
         return
 
+    if is_too_many_mentions(text):
+        return
+
     if not is_full_review(text):
         return
 
@@ -129,6 +145,9 @@ async def handle_text_review(message: Message):
 
     if is_self_review(message, text):
         await message.reply(f"{SELF} Нельзя оставлять отзывы самому себе. Не засчитано")
+        return
+
+    if is_too_many_mentions(text):
         return
 
     if not is_full_review(text):
