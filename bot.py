@@ -61,6 +61,7 @@ def parse_review(text: str) -> tuple[str | None, int]:
         return None, 0
 
     t = text.lower()
+    t = re.sub(r'([+-])\s+', r'\1', t)
     if "+rep" in t or "+реп" in t:
         return user_match.group(1).lower(), 1
     if "-rep" in t or "-реп" in t:
