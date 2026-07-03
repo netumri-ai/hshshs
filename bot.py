@@ -8,7 +8,14 @@ import asyncpg
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_IDS = set(map(int, os.getenv("ADMIN_IDS", "").split(",")))
+
+admin_ids_raw = os.getenv("ADMIN_IDS", "")
+ADMIN_IDS = set()
+if admin_ids_raw:
+    for aid in admin_ids_raw.split(","):
+        aid = aid.strip()
+        if aid:
+            ADMIN_IDS.add(int(aid))
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -42,9 +49,12 @@ async def init_db():
 OK = "<tg-emoji emoji-id='5870633910337015697'>✅</tg-emoji>"
 ERR = "<tg-emoji emoji-id='5870657884844462243'>❌</tg-emoji>"
 WARN = "<tg-emoji emoji-id='5870931487146119264'>❗️</tg-emoji>"
+CLOCK = "<tg-emoji emoji-id='5870496192210669260'>⏲</tg-emoji>"
+SELF = "<tg-emoji emoji-id='5870450390679425417'>🗒</tg-emoji>"
 
 USER_RE = re.compile(r"@(\w+)")
 REP_RE = re.compile(r"([+-]\s*(rep|реп))", re.IGNORECASE)
+AD_RE = re.compile(r"(t\.me|telegram\.me|http|www\.|@\w+bot|купить|продам|заработ|слив|прайс)", re.IGNORECASE)
 
 def extract_user(text: str) -> str | None:
     m = USER_RE.search(text)
@@ -58,8 +68,8 @@ def extract_rep(text: str) -> int:
         return -1
     return 0
 
-def is_forward(message: Message) -> bool:
-    return message.forward_from is not None or message.forward_sender_name is not None
+def is_forward_hidden(message: Message) -> bool:
+    return message.forward_sender_name is not None and message.forward_from is None
 
 def is_self_review(message: Message, text: str) -> bool:
     user = extract_user(text)
@@ -69,8 +79,8 @@ def is_self_review(message: Message, text: str) -> bool:
         return user == message.from_user.username.lower()
     return False
 
-def is_probably_review(text: str) -> bool:
-    return bool(USER_RE.search(text) or REP_RE.search(text))
+def is_ad(text: str) -> bool:
+    return bool(AD_RE.search(text))
 
 def is_full_review(text: str) -> bool:
     return bool(USER_RE.search(text) and REP_RE.search(text))
@@ -88,36 +98,41 @@ async def update_rep(username: str, value: int):
 async def handle_photo_review(message: Message):
     text = message.caption or ""
 
-    if is_forward(message):
+    if is_forward_hidden(message):
+        await message.reply(f"{CLOCK} Отзыв переслан от скрытого профиля. Не засчитано")
+        return
+
+    if is_ad(text):
         return
 
     if is_self_review(message, text):
+        await message.reply(f"{SELF} Нельзя оставлять отзывы самому себе. Не засчитано")
         return
 
-    if not is_probably_review(text):
+    if not is_full_review(text):
         return
 
-    if is_full_review(text):
-        await process_full_review(message, text)
-        return
-
-    await explain_missing(message, text)
+    await process_full_review(message, text)
 
 @dp.message(F.text)
 async def handle_text_review(message: Message):
     text = message.text or ""
 
-    if is_forward(message):
+    if is_forward_hidden(message):
+        await message.reply(f"{CLOCK} Отзыв переслан от скрытого профиля. Не засчитано")
+        return
+
+    if is_ad(text):
         return
 
     if is_self_review(message, text):
+        await message.reply(f"{SELF} Нельзя оставлять отзывы самому себе. Не засчитано")
         return
 
-    if is_probably_review(text):
-        if is_full_review(text):
-            await message.reply(f"{WARN} Добавьте фото к отзыву")
-        else:
-            await explain_missing(message, text)
+    if not is_full_review(text):
+        return
+
+    await message.reply(f"{WARN} Добавь фото к отзыву")
 
 async def process_full_review(message: Message, text: str):
     user = extract_user(text)
@@ -132,27 +147,15 @@ async def process_full_review(message: Message, text: str):
             message.from_user.id, user, text, rep, message.message_id
         )
         await update_rep(user, rep)
-        await message.answer(f"{OK} Отзыв принят")
-
-async def explain_missing(message: Message, text: str):
-    has_user = USER_RE.search(text) is not None
-    has_rep = REP_RE.search(text) is not None
-
-    if has_user and not has_rep:
-        await message.reply(f"{ERR} Укажите репутацию (+rep или -rep)")
-    elif has_rep and not has_user:
-        await message.reply(f"{ERR} Укажите пользователя (@username)")
-    else:
-        await message.reply(f"{WARN} Для отзыва нужно фото, @username и +/-rep")
+        await message.answer(f"{OK} Отзыв принят, репутация обновлена")
 
 @dp.message(F.text == "/del")
 async def delete_review(message: Message):
     if message.from_user.id not in ADMIN_IDS:
-        await message.reply(f"{ERR} Недостаточно прав")
         return
 
     if not message.reply_to_message:
-        await message.reply(f"{ERR} Ответьте на сообщение с отзывом")
+        await message.reply(f"{ERR} Ответь командой /del на сообщение которое нужно удалить")
         return
 
     msg_id = message.reply_to_message.message_id
@@ -163,7 +166,7 @@ async def delete_review(message: Message):
         )
 
         if not row:
-            await message.reply(f"{ERR} Отзыв не найден")
+            await message.reply(f"{ERR} Отзыв не найден в базе данных")
             return
 
         username, rep = row["to_username"], row["rep"]
@@ -171,17 +174,11 @@ async def delete_review(message: Message):
         await update_rep(username, -rep)
         await conn.execute("DELETE FROM reviews WHERE message_id = $1", msg_id)
 
-    await message.answer("Удалено")
+    await message.answer(f"{OK} Отзыв удалён, репутация пересчитана")
 
-@dp.message(F.text == "/start")
+@dp.message(F.text == "/start", F.chat.type == "private")
 async def start(message: Message):
-    await message.answer(
-        "Бот для отзывов с репутацией.\n\n"
-        "Отправьте фото с подписью:\n"
-        "@username +rep или -rep\n\n"
-        "Команды:\n"
-        "/del (ответ на отзыв) — удалить (админ)"
-    )
+    await message.answer("Hello")
 
 async def main():
     await init_db()
