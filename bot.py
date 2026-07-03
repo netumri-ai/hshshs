@@ -9,7 +9,8 @@ from aiogram.types import Message
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-bot = Bot(token=BOT_TOKEN)
+# 🔥 FIX: включаем HTML (ОБЯЗАТЕЛЬНО для tg-emoji)
+bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher()
 
 # --- DB ---
@@ -58,23 +59,7 @@ def extract_rep(text: str):
         return -1
     return 0
 
-# --- SECURITY CHECKS ---
-
-def is_forward(message: Message):
-    return message.forward_from is not None or message.forward_sender_name is not None
-
-def is_self_review(message: Message, text: str):
-    user = extract_user(text)
-    if not user:
-        return False
-    username_clean = user.replace("@", "").lower()
-
-    if message.from_user.username:
-        return username_clean == message.from_user.username.lower()
-
-    return False
-
-# --- LOGIC ---
+# --- CHECKS ---
 def is_probably_review(text: str):
     return bool(USER_RE.search(text) or REP_RE.search(text))
 
@@ -96,19 +81,9 @@ def update_rep(username: str, value: int):
 async def handle_review(message: Message):
     text = message.caption or ""
 
-    # 0. BLOCK FORWARDS (hidden profile included)
-    if is_forward(message):
-        return
-
-    # 1. BLOCK SELF REVIEWS
-    if is_self_review(message, text):
-        return
-
-    # 2. ignore non-review
     if not is_probably_review(text):
         return
 
-    # 3. FULL REVIEW ONLY
     if is_full_review(text):
         user = extract_user(text)
         rep = extract_rep(text)
@@ -133,18 +108,8 @@ async def handle_review(message: Message):
         await message.answer(f"{OK} Отзыв принят")
         return
 
-    # 4. everything else (almost review) → explain
-    if USER_RE.search(text) and not REP_RE.search(text):
-        await message.reply(f"{ERR} Это не отзыв без репутации")
-        return
-
-    if REP_RE.search(text) and not USER_RE.search(text):
-        await message.reply(f"{ERR} Укажите пользователя (@username)")
-        return
-
-    if not message.photo:
-        await message.reply(f"{WARN} Добавьте фото")
-        return
+    # почти отзыв → молчим или можно позже расширить
+    return
 
 # --- DELETE ---
 @dp.message(F.text == "/del")
