@@ -53,26 +53,26 @@ CLOCK = "<tg-emoji emoji-id='5870496192210669260'>⏲</tg-emoji>"
 SELF = "<tg-emoji emoji-id='5870450390679425417'>🗒</tg-emoji>"
 
 USER_RE = re.compile(r"@(\w+)")
-REP_RE = re.compile(r"([+-]\s*(rep|реп))", re.IGNORECASE)
 AD_RE = re.compile(r"(t\.me|telegram\.me|http|www\.|@\w+bot|купить|продам|заработ|слив|прайс)", re.IGNORECASE)
 
-def extract_user(text: str) -> str | None:
-    m = USER_RE.search(text)
-    return m.group(1).lower() if m else None
+def parse_review(text: str) -> tuple[str | None, int]:
+    user_match = USER_RE.search(text)
+    if not user_match:
+        return None, 0
 
-def extract_rep(text: str) -> int:
     t = text.lower()
-    if "+rep" in t or "+ реп" in t:
-        return 1
-    if "-rep" in t or "- реп" in t:
-        return -1
-    return 0
+    if "+rep" in t or "+реп" in t:
+        return user_match.group(1).lower(), 1
+    if "-rep" in t or "-реп" in t:
+        return user_match.group(1).lower(), -1
+
+    return None, 0
 
 def is_forward_hidden(message: Message) -> bool:
     return message.forward_sender_name is not None and message.forward_from is None
 
 def is_self_review(message: Message, text: str) -> bool:
-    user = extract_user(text)
+    user, _ = parse_review(text)
     if not user:
         return False
     if message.from_user.username:
@@ -83,7 +83,8 @@ def is_ad(text: str) -> bool:
     return bool(AD_RE.search(text))
 
 def is_full_review(text: str) -> bool:
-    return bool(USER_RE.search(text) and REP_RE.search(text))
+    user, rep = parse_review(text)
+    return user is not None and rep != 0
 
 async def update_rep(username: str, value: int):
     async with pool.acquire() as conn:
@@ -135,8 +136,7 @@ async def handle_text_review(message: Message):
     await message.reply(f"{WARN} Добавь фото к отзыву")
 
 async def process_full_review(message: Message, text: str):
-    user = extract_user(text)
-    rep = extract_rep(text)
+    user, rep = parse_review(text)
 
     if not user or rep == 0:
         return
