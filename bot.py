@@ -36,14 +36,14 @@ CREATE TABLE IF NOT EXISTS users (
 
 conn.commit()
 
+# --- EMOJI ---
+OK = "<tg-emoji emoji-id='5870633910337015697'>✅</tg-emoji>"
+ERR = "<tg-emoji emoji-id='5870657884844462243'>❌</tg-emoji>"
+WARN = "<tg-emoji emoji-id='5870931487146119264'>❗️</tg-emoji>"
+
 # --- REGEX ---
 USER_RE = re.compile(r"@\w+")
 REP_RE = re.compile(r"([+-]\s*(rep|реп))", re.IGNORECASE)
-
-# --- EMOJI ---
-OK = "✅"
-ERR = "❌"
-WARN = "❗️"
 
 # --- PARSE ---
 def extract_user(text: str):
@@ -58,31 +58,28 @@ def extract_rep(text: str):
         return -1
     return 0
 
-# --- LOGIC CHECKS ---
-def is_full_review(text: str, has_photo: bool):
-    return has_photo and USER_RE.search(text) and REP_RE.search(text)
+# --- SECURITY CHECKS ---
 
-def is_probably_review(text: str, has_photo: bool):
-    score = 0
-    if has_photo:
-        score += 1
-    if USER_RE.search(text):
-        score += 1
-    if REP_RE.search(text):
-        score += 1
-    return score >= 2
+def is_forward(message: Message):
+    return message.forward_from is not None or message.forward_sender_name is not None
 
-def get_error(text: str, has_photo: bool):
-    if not has_photo:
-        return f"{WARN} Добавьте фото"
+def is_self_review(message: Message, text: str):
+    user = extract_user(text)
+    if not user:
+        return False
+    username_clean = user.replace("@", "").lower()
 
-    if not USER_RE.search(text):
-        return f"{ERR} Укажите @username"
+    if message.from_user.username:
+        return username_clean == message.from_user.username.lower()
 
-    if not REP_RE.search(text):
-        return f"{ERR} Добавьте +rep или -rep"
+    return False
 
-    return None
+# --- LOGIC ---
+def is_probably_review(text: str):
+    return bool(USER_RE.search(text) or REP_RE.search(text))
+
+def is_full_review(text: str):
+    return bool(USER_RE.search(text) and REP_RE.search(text))
 
 # --- REP ---
 def update_rep(username: str, value: int):
@@ -99,14 +96,20 @@ def update_rep(username: str, value: int):
 async def handle_review(message: Message):
     text = message.caption or ""
 
-    has_photo = True
-
-    # 1. МУСОР → МОЛЧИМ
-    if not is_probably_review(text, has_photo):
+    # 0. BLOCK FORWARDS (hidden profile included)
+    if is_forward(message):
         return
 
-    # 2. ПОЛНЫЙ ОТЗЫВ → ЗАСЧИТЫВАЕМ
-    if is_full_review(text, has_photo):
+    # 1. BLOCK SELF REVIEWS
+    if is_self_review(message, text):
+        return
+
+    # 2. ignore non-review
+    if not is_probably_review(text):
+        return
+
+    # 3. FULL REVIEW ONLY
+    if is_full_review(text):
         user = extract_user(text)
         rep = extract_rep(text)
 
@@ -130,13 +133,20 @@ async def handle_review(message: Message):
         await message.answer(f"{OK} Отзыв принят")
         return
 
-    # 3. ПОЧТИ ОТЗЫВ → ОБЪЯСНЯЕМ ОШИБКУ
-    err = get_error(text, has_photo)
-    if err:
-        await message.reply(err)
+    # 4. everything else (almost review) → explain
+    if USER_RE.search(text) and not REP_RE.search(text):
+        await message.reply(f"{ERR} Это не отзыв без репутации")
         return
 
-# --- DELETE REVIEW ---
+    if REP_RE.search(text) and not USER_RE.search(text):
+        await message.reply(f"{ERR} Укажите пользователя (@username)")
+        return
+
+    if not message.photo:
+        await message.reply(f"{WARN} Добавьте фото")
+        return
+
+# --- DELETE ---
 @dp.message(F.text == "/del")
 async def delete_review(message: Message):
     if not message.reply_to_message:
