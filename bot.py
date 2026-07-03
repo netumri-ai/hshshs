@@ -1,12 +1,11 @@
 import asyncio
 import re
-import os
 import sqlite3
+import os
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 
-# --- ENV ---
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -37,29 +36,16 @@ CREATE TABLE IF NOT EXISTS users (
 
 conn.commit()
 
-# --- PARSER ---
+# --- REGEX ---
 USER_RE = re.compile(r"@\w+")
 REP_RE = re.compile(r"([+-]\s*(rep|реп))", re.IGNORECASE)
 
-BLACKLIST = ["продам", "подпишу", "куплю", "ищу", "услуги", "в наличии"]
+# --- EMOJI ---
+OK = "✅"
+ERR = "❌"
+WARN = "❗️"
 
-def is_review(text: str, has_photo: bool):
-    if not has_photo:
-        return False
-
-    t = text.lower()
-
-    if not USER_RE.search(t):
-        return False
-
-    if not REP_RE.search(t):
-        return False
-
-    if any(w in t for w in BLACKLIST):
-        return False
-
-    return True
-
+# --- PARSE ---
 def extract_user(text: str):
     m = USER_RE.search(text)
     return m.group(0) if m else None
@@ -72,7 +58,33 @@ def extract_rep(text: str):
         return -1
     return 0
 
-# --- REP SYSTEM ---
+# --- LOGIC CHECKS ---
+def is_full_review(text: str, has_photo: bool):
+    return has_photo and USER_RE.search(text) and REP_RE.search(text)
+
+def is_probably_review(text: str, has_photo: bool):
+    score = 0
+    if has_photo:
+        score += 1
+    if USER_RE.search(text):
+        score += 1
+    if REP_RE.search(text):
+        score += 1
+    return score >= 2
+
+def get_error(text: str, has_photo: bool):
+    if not has_photo:
+        return f"{WARN} Добавьте фото"
+
+    if not USER_RE.search(text):
+        return f"{ERR} Укажите @username"
+
+    if not REP_RE.search(text):
+        return f"{ERR} Добавьте +rep или -rep"
+
+    return None
+
+# --- REP ---
 def update_rep(username: str, value: int):
     cur.execute("""
         INSERT INTO users(username, rep_score)
@@ -82,42 +94,52 @@ def update_rep(username: str, value: int):
     """, (username, value, value))
     conn.commit()
 
-# --- HANDLER: REVIEW ---
+# --- HANDLER ---
 @dp.message(F.photo)
 async def handle_review(message: Message):
     text = message.caption or ""
 
-    if not is_review(text, True):
+    has_photo = True
+
+    # 1. МУСОР → МОЛЧИМ
+    if not is_probably_review(text, has_photo):
         return
 
-    user = extract_user(text)
-    rep = extract_rep(text)
+    # 2. ПОЛНЫЙ ОТЗЫВ → ЗАСЧИТЫВАЕМ
+    if is_full_review(text, has_photo):
+        user = extract_user(text)
+        rep = extract_rep(text)
 
-    if not user or rep == 0:
+        if not user or rep == 0:
+            return
+
+        cur.execute("""
+            INSERT INTO reviews (from_user_id, to_username, text, rep, message_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            message.from_user.id,
+            user,
+            text,
+            rep,
+            message.message_id
+        ))
+
+        conn.commit()
+        update_rep(user, rep)
+
+        await message.answer(f"{OK} Отзыв принят")
         return
 
-    cur.execute("""
-        INSERT INTO reviews (from_user_id, to_username, text, rep, message_id)
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        message.from_user.id,
-        user,
-        text,
-        rep,
-        message.message_id
-    ))
+    # 3. ПОЧТИ ОТЗЫВ → ОБЪЯСНЯЕМ ОШИБКУ
+    err = get_error(text, has_photo)
+    if err:
+        await message.reply(err)
+        return
 
-    conn.commit()
-
-    update_rep(user, rep)
-
-    await message.answer("Отзыв принят ✅")
-
-# --- DELETE REVIEW (reply /del) ---
+# --- DELETE REVIEW ---
 @dp.message(F.text == "/del")
 async def delete_review(message: Message):
     if not message.reply_to_message:
-        await message.answer("Ответь на отзыв ❗")
         return
 
     msg_id = message.reply_to_message.message_id
@@ -126,7 +148,6 @@ async def delete_review(message: Message):
     row = cur.fetchone()
 
     if not row:
-        await message.answer("Не найдено ❗")
         return
 
     username, rep = row
@@ -136,15 +157,13 @@ async def delete_review(message: Message):
     cur.execute("DELETE FROM reviews WHERE message_id = ?", (msg_id,))
     conn.commit()
 
-    await message.answer("Удалено ❌")
+    await message.answer("Удалено")
 
-# --- /rep ---
+# --- REP ---
 @dp.message(F.text.startswith("/rep"))
 async def get_rep(message: Message):
     parts = message.text.split()
-
     if len(parts) < 2:
-        await message.answer("Укажи @user")
         return
 
     username = parts[1]
@@ -153,10 +172,10 @@ async def get_rep(message: Message):
     row = cur.fetchone()
 
     if not row:
-        await message.answer("Нет данных")
+        await message.answer("0")
         return
 
-    await message.answer(f"{username} репутация: {row[0]}")
+    await message.answer(f"{username}: {row[0]}")
 
 # --- START ---
 @dp.message(F.text == "/start")
