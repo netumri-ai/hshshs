@@ -138,7 +138,10 @@ async def handle_photo_review(message: Message):
 
 @dp.message(F.text)
 async def handle_text_review(message: Message):
-    text = message.text or ""
+    if message.text.startswith("/"):
+        return
+
+    text = message.text
 
     if is_forward_hidden(message):
         await message.reply(f"{CLOCK} Отзыв переслан от скрытого профиля. Не засчитано")
